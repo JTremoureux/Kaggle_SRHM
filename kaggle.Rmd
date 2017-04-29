@@ -1,0 +1,181 @@
+---
+title: "Geomatics for Kaggle Sberbank Russian Housing Market competitions"
+output:
+  html_notebook:
+    fig_caption: yes
+    fig_height: 5
+    fig_width: 8
+    theme: yeti
+    toc: yes
+  html_document:
+    fig_height: 5
+    fig_width: 8
+---
+
+# The competition
+
+The competition : [Sberbank Russian Housing Market](https://www.kaggle.com/c/sberbank-russian-housing-market)  
+Can you predict realty price fluctuations in Russia’s volatile economy?  
+
+
+```{r, include=FALSE}
+# PACKAGE LOADING
+library(dplyr)
+library(sp)
+library(rgdal)
+library(leaflet)
+library(data.table)
+library(DT)
+
+
+addTiles = function (map, urlTemplate = "http://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+attribution = NULL, layerId = NULL, group = NULL, options = tileOptions())
+{
+options$attribution = attribution
+if (missing(urlTemplate) && is.null(options$attribution))
+options$attribution = paste("© OpenStreetMap",
+"contributors, CC-BY-SA")
+invokeMethod(map, getMapData(map), "addTiles", urlTemplate,
+layerId, group, options)
+}
+```
+
+# SHAPEFILE and data
+
+The shapefile data has been found here: [http://gis-lab.info/qa/moscow-atd.html](http://gis-lab.info/qa/moscow-atd.html).  
+(This is the second **ESRI shape** file)
+
+```{r}
+mo_shp <- readOGR(dsn = "shp_mo", layer = "mo", stringsAsFactors = FALSE)
+plot(mo_shp)
+```
+
+We also need the train dataset from Kaggle:
+```{r}
+# KAGGLE DATA FILE
+train_df <- fread("../input/train.csv", stringsAsFactors = FALSE)
+# test_df <- fread("input/test.csv", stringsAsFactors = FALSE)
+```
+
+```{r}
+length(unique(train_df$sub_area))
+```
+
+The federal city of Moscow, Russia is divided into twelve administrative okrugs, which are in turn subdivided into districts (raions). [(source Wikipedia)](https://en.wikipedia.org/wiki/Administrative_divisions_of_Moscow)  
+There are 146 raions, which are the **146 different sub_area**, which are the **NAME** of the shapefile.
+
+The only issue is that the raion names don't match. Those from Kaggle (**sub_area**) are in English while those on the shapefile (**NAME**) are in Russian.  
+For information: The other variable **OKRUGS** matches with **ABBREV_AO**. There are the 12 administrative okrugs.
+
+
+I have created a dictionnary which matches everything. 
+
+```{r, echo=TRUE}
+NAME_to_subarea <- read.csv("NAME_to_subarea.csv", stringsAsFactors = FALSE)
+head(NAME_to_subarea)
+```
+
+Then we only need to merge the new columns.
+
+```{r}
+mo <- merge(mo_shp, NAME_to_subarea)
+modata <- mo@data;modata
+```
+
+# Plot the shapefile
+```{r}
+factpal <- colorFactor(topo.colors(12), mo@data$OKRUG)
+
+labels <- sprintf(
+  "<strong>%s</strong><br/>AO: %s",
+  mo@data$sub_area, mo@data$OKRUG
+) %>% lapply(htmltools::HTML)
+
+
+OKRUGS <- leaflet(mo) %>% 
+  addTiles() %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.5,
+              fillColor = ~factpal(OKRUG),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              label = labels,
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "15px",
+                direction = "auto")) %>%
+  addLegend(pal = factpal, values = ~OKRUG, opacity = 1)
+OKRUGS
+```
+
+# Plot some useful data {.tabset}
+
+We want now to plot the price of the transactions.
+
+```{r}
+data <- train_df %>%
+  filter(full_sq > 0) %>%
+  mutate(price_sq = price_doc/full_sq) %>%
+  group_by(sub_area) %>%
+  summarise(nb = n(),
+            mean_price_doc = mean(price_doc),
+            mean_price_sq = mean(price_sq))
+
+mo <- merge(mo, data)
+```
+
+```{r}
+pal1 <- colorNumeric(
+  palette = "YlOrRd",
+  domain = mo@data$mean_price_doc)
+
+pal2 <- colorNumeric(
+  palette = "YlOrRd",
+  domain = mo@data$mean_price_sq)
+
+labels <- sprintf(
+  "<strong>%s</strong><br/>AO: %s. <br/>Mean sale price: %g. <br/>Square metre cost: %g. <br/>Number of transactions: %g",
+  mo@data$sub_area, mo@data$OKRUG, mo@data$mean_price_doc, mo@data$mean_price_sq, mo@data$nb
+) %>% lapply(htmltools::HTML)
+
+```
+
+## Square meter cost
+
+```{r}
+map1 <- leaflet(mo) %>% 
+  addTiles() %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.5,
+              fillColor = ~pal1(mean_price_doc),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              label = labels,
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "15px",
+                direction = "auto")) %>%
+  addLegend(pal = pal1, values = ~mean_price_doc, opacity = 1, title = "Average selling prices")
+map1
+```
+
+## Mean price sale 
+
+```{r}
+map2 <- leaflet(mo) %>% 
+  addTiles() %>%
+  addPolygons(color = "#444444", weight = 1, smoothFactor = 0.5,
+              opacity = 1.0, fillOpacity = 0.5,
+              fillColor = ~pal2(mean_price_sq),
+              highlightOptions = highlightOptions(color = "white", weight = 2,
+                                                  bringToFront = TRUE),
+              label = labels,
+              labelOptions = labelOptions(
+                style = list("font-weight" = "normal", padding = "3px 8px"),
+                textsize = "15px",
+                direction = "auto")) %>%
+  addLegend(pal = pal2, values = ~mean_price_sq, opacity = 1, title = "Average selling prices")
+map2
+```
+
+
